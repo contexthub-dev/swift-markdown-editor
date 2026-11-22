@@ -76,7 +76,7 @@ final class DocumentFile {
     diskText = text
   }
 
-  // MARK: From the presenter (main queue)
+  // MARK: From the presenter (hopped to main)
 
   /// Bursts (atomic replace = several events) become one change.
   func presentedChange() {
@@ -87,8 +87,7 @@ final class DocumentFile {
   }
 
   func presentedMove(to newURL: URL) {
-    url = newURL
-    bridge.presentedItemURL = newURL
+    url = newURL  // the bridge already follows the move on its own queue
     onMove?(newURL)
   }
 
@@ -104,24 +103,46 @@ final class DocumentFile {
 }
 
 /// `NSFilePresenter` needs an NSObject; it forwards to the main-actor `DocumentFile`.
+///
+/// Its queue is a private serial one, never `.main`: reads and writes are coordinated on the
+/// main thread, and a coordinated write blocks until every OTHER presenter of the file has been
+/// messaged on its own queue. A second presenter on `.main` (another editor on the same file)
+/// would wait for the very thread that is blocked, and the save would hang forever.
 final class FilePresenterBridge: NSObject, NSFilePresenter, @unchecked Sendable {
-  // Read by the coordination machinery off the main thread; only written on main.
+  // Read by the coordination machinery off the main thread; written on the presenter queue
+  // (moves) and at init.
   nonisolated(unsafe) var presentedItemURL: URL?
-  let presentedItemOperationQueue = OperationQueue.main
+  let presentedItemOperationQueue: OperationQueue = {
+    let queue = OperationQueue()
+    queue.maxConcurrentOperationCount = 1  // serial: change, move and delete keep their order
+    queue.name = "MarkdownEditor.FilePresenter"
+    return queue
+  }()
   nonisolated(unsafe) weak var owner: DocumentFile?
 
   init(url: URL) { presentedItemURL = url }
 
   func presentedItemDidChange() {
-    MainActor.assumeIsolated { owner?.presentedChange() }
+    onMain { $0.presentedChange() }
   }
 
   func presentedItemDidMove(to newURL: URL) {
-    MainActor.assumeIsolated { owner?.presentedMove(to: newURL) }
+    presentedItemURL = newURL  // before returning, so the next coordination uses the new path
+    onMain { $0.presentedMove(to: newURL) }
   }
 
   func accommodatePresentedItemDeletion(completionHandler: @escaping @Sendable (Error?) -> Void) {
-    MainActor.assumeIsolated { owner?.presentedDelete() }
+    onMain { $0.presentedDelete() }
     completionHandler(nil)
+  }
+
+  /// Hop to the owner without waiting: the main thread may be inside a coordinated call.
+  private func onMain(_ body: @escaping @MainActor (DocumentFile) -> Void) {
+    DispatchQueue.main.async { [weak self] in
+      MainActor.assumeIsolated {
+        guard let owner = self?.owner else { return }
+        body(owner)
+      }
+    }
   }
 }

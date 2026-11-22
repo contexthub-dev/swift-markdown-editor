@@ -36,6 +36,11 @@ Repo-specific facts. One per line, terse.
 - Async renders resize blocks: wrap such restyles in `keepingViewport { }`, or a heading jump lands in the wrong place.
 - `NSAttributedString(html:)` (block HTML, RTF copy) runs on the main thread only, and only on sanitised HTML (remote `<img>` is
   stripped, since it would load synchronously).
+- File mode: `FilePresenterBridge` runs on a PRIVATE serial queue and hops to main with `DispatchQueue.main.async`.
+  Never `.main`: saves coordinate on main, and a write blocks until every other presenter of that file has been
+  messaged on its queue. With two presenters on `.main`, the save hangs forever (sol-app hang, 0.1.1).
+- `DocumentFile` closures must capture the file `weak`: it owns them, so a strong `f` leaks the file AND keeps its
+  presenter registered. `NSFileCoordinator.filePresenters` counts live presenters; the tests assert on it.
 
 ## Library quirks
 - CodeEditLanguages' own query loader builds `<resourceURL>/Resources/tree-sitter-x/…`. In a SwiftPM bundle `resourceURL`

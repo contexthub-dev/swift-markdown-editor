@@ -169,3 +169,35 @@ final class FileHarness {
   #expect(split.arrangedSubviews.count == 1)
   #expect(h.tv.textLayoutManager != nil)
 }
+
+/// Presenters registered in this process for `url`.
+@MainActor private func presenters(of url: URL) -> Int {
+  NSFileCoordinator.filePresenters.filter {
+    $0.presentedItemURL?.standardizedFileURL.path == url.standardizedFileURL.path
+  }.count
+}
+
+@MainActor @Test func reopeningFreesTheOldFileAndItsPresenter() throws {
+  let f = try FileHarness("")
+  weak var old = f.h.c.file
+  #expect(presenters(of: f.url) == 1)
+  f.h.c.open(f.url, watch: true)  // a host re-opening the same file
+  #expect(old == nil)  // it used to be kept alive by its own onDelete closure
+  #expect(presenters(of: f.url) == 1)
+}
+
+/// Two live editors on one file: a save from the main thread must not wait on the other
+/// editor's presenter. This hung forever when presenters ran on the main queue.
+@MainActor @Test func savingWithAnotherPresenterOnTheSameFileDoesNotHang() async throws {
+  let f = try FileHarness("")
+  let other = DocumentFile(url: f.url)
+  other.watching = true
+  defer { other.watching = false }
+  var otherSawChange = false
+  other.onChange = { otherSawChange = true }
+  f.h.type("hello")
+  try f.ctl.save()
+  #expect(try String(contentsOf: f.url, encoding: .utf8) == "hello")
+  await f.settle(otherSawChange)
+  #expect(otherSawChange)  // and the other editor still hears about it
+}

@@ -24,8 +24,11 @@ extension EditorCoordinator {
       self.activeController.fileURL = newURL
       self.restyleAll()  // relative images resolve against the new folder
     }
-    f.onDelete = { [weak self] in
-      guard let self else { return }
+    // Weak `f` too: the file owns this closure, so a strong capture would keep it (and its
+    // registered presenter) alive forever, and a later coordinated save of the same file would
+    // wait on that orphaned presenter.
+    f.onDelete = { [weak self, weak f] in
+      guard let self, let f else { return }
       self.updateDirty()
       self.hooks.onError(.fileDeleted(f.url))
     }
